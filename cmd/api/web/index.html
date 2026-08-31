@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threadline | Blog Social</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/web/styles.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">T</span><span>threadline</span></a>
+    <div class="session"><span id="session-label">Not signed in</span><button id="logout" class="ghost hidden">Log out</button></div>
+  </header>
+
+  <main class="shell">
+    <section class="intro">
+      <div>
+        <p class="eyebrow">BLOG SOCIAL / API PLAYGROUND</p>
+        <h1>Ideas with<br><em>room to grow.</em></h1>
+        <p class="lede">Publish a thought, follow the conversation, and see the feed update from the API in real time.</p>
+      </div>
+      <div class="status-pill"><span class="pulse"></span><span id="api-status">Connect your account</span></div>
+    </section>
+
+    <section id="auth-panel" class="auth-grid">
+      <form id="login-form" class="panel auth-card">
+        <div class="panel-kicker">WELCOME BACK</div><h2>Sign in</h2>
+        <label>Email<input name="email" type="email" autocomplete="username" placeholder="you@example.com" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="8+ characters" required></label>
+        <button class="button primary" type="submit">Enter the feed <span>↗</span></button>
+        <p class="form-note" id="login-message"></p>
+      </form>
+      <form id="register-form" class="panel auth-card register-card">
+        <div class="panel-kicker">NEW VOICE</div><h2>Create an account</h2>
+        <label>Display name<input name="displayName" autocomplete="name" placeholder="Ada Lovelace" required></label>
+        <label>Email<input name="email" type="email" autocomplete="username" placeholder="you@example.com" required></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" placeholder="8+ characters" minlength="8" required></label>
+        <button class="button outline" type="submit">Start writing <span>↗</span></button>
+        <p class="form-note" id="register-message"></p>
+      </form>
+      <form id="verify-form" class="panel verify-card" autocomplete="off">
+        <div class="panel-kicker">LOCAL DEV TOOL</div><h2>Verify email</h2>
+        <p>Use the token returned after registration when running locally.</p>
+        <div class="inline-field"><input name="token" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste verification token" required><button class="icon-button" title="Verify email">→</button></div>
+        <p class="form-note" id="verify-message"></p>
+      </form>
+    </section>
+
+    <section id="app-panel" class="app-grid hidden">
+      <aside class="sidebar">
+        <div class="side-label">YOUR SPACE</div>
+        <div class="profile"><div id="avatar" class="avatar">?</div><div><strong id="profile-name">Writer</strong><span id="profile-email">email</span></div></div>
+        <button id="refresh-feed" class="side-action">↻ <span>Refresh feed</span></button>
+        <div class="side-rule"></div>
+        <div class="side-label">QUICK NOTE</div><p class="side-copy">Every post is persisted in PostgreSQL. Redis keeps the feed snappy.</p>
+      </aside>
+      <div class="feed-column">
+        <div class="feed-head"><div><p class="eyebrow">LATEST FROM EVERYONE</p><h2>Open feed</h2></div><span id="cache-state" class="cache-state"></span></div>
+        <form id="post-form" class="composer panel">
+          <div class="composer-top"><div class="avatar small" id="composer-avatar">?</div><input name="title" placeholder="Give your idea a title" required maxlength="160"></div>
+          <textarea name="body" placeholder="What are you thinking about?" required maxlength="50000"></textarea>
+          <div class="composer-bottom"><span>Markdown-friendly thoughts welcome</span><button class="button primary" type="submit">Publish note <span>↗</span></button></div>
+          <p class="form-note" id="post-message"></p>
+        </form>
+        <div id="feed" class="feed"></div>
+        <div id="empty-feed" class="empty hidden">No notes yet. Be the first voice in the room.</div>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="/web/app.js"></script>
+</body>
+</html>
