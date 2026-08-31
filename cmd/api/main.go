@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -29,6 +30,8 @@ type Server struct {
 	rdb                       *redis.Client
 	jwtSecret                 []byte
 	sendgridKey, sendgridFrom string
+	feedMu                    sync.Mutex
+	feedClients               map[chan string]struct{}
 }
 type claims struct {
 	UserID string `json:"sub"`
@@ -86,12 +89,13 @@ func main() {
 	}
 	rdb := redis.NewClient(rdbOpts)
 	defer rdb.Close()
-	server := &Server{db: db, rdb: rdb, jwtSecret: []byte(env("JWT_SECRET", "dev-secret-change-me")), sendgridKey: os.Getenv("SENDGRID_API_KEY"), sendgridFrom: env("SENDGRID_FROM_EMAIL", "no-reply@example.com")}
+	server := &Server{db: db, rdb: rdb, jwtSecret: []byte(env("JWT_SECRET", "dev-secret-change-me")), sendgridKey: os.Getenv("SENDGRID_API_KEY"), sendgridFrom: env("SENDGRID_FROM_EMAIL", "no-reply@example.com"), feedClients: make(map[chan string]struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/register", server.register)
 	mux.HandleFunc("POST /api/v1/auth/login", server.login)
 	mux.HandleFunc("GET /api/v1/auth/verify", server.verify)
 	mux.Handle("GET /api/v1/feed", server.auth(http.HandlerFunc(server.feed)))
+	mux.Handle("GET /api/v1/feed/stream", server.auth(http.HandlerFunc(server.feedStream)))
 	mux.Handle("POST /api/v1/posts", server.auth(http.HandlerFunc(server.createPost)))
 	mux.Handle("PUT /api/v1/posts/{id}", server.auth(http.HandlerFunc(server.updatePost)))
 	mux.Handle("DELETE /api/v1/posts/{id}", server.auth(http.HandlerFunc(server.deletePost)))
@@ -236,6 +240,9 @@ func (s *Server) verify(w http.ResponseWriter, r *http.Request) {
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if raw == "" {
+			raw = r.URL.Query().Get("token")
+		}
 		parsed, err := jwt.ParseWithClaims(raw, &claims{}, func(token *jwt.Token) (any, error) {
 			if token.Method != jwt.SigningMethodHS256 {
 				return nil, errors.New("unexpected signing method")
@@ -252,6 +259,30 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	})
 }
 func current(r *http.Request) *claims { return r.Context().Value("claims").(*claims) }
+func (s *Server) registerFeedClient(ch chan string) {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	s.feedClients[ch] = struct{}{}
+}
+func (s *Server) unregisterFeedClient(ch chan string) {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	delete(s.feedClients, ch)
+}
+func (s *Server) publishFeedUpdate(event string) {
+	s.feedMu.Lock()
+	clients := make([]chan string, 0, len(s.feedClients))
+	for ch := range s.feedClients {
+		clients = append(clients, ch)
+	}
+	s.feedMu.Unlock()
+	for _, ch := range clients {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
 func (s *Server) invalidateFeed(ctx context.Context) {
 	var cursor uint64
 	for {
@@ -281,6 +312,29 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+func (s *Server) feedStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	if flusher, ok := w.(http.Flusher); ok {
+		ch := make(chan string, 1)
+		s.registerFeedClient(ch)
+		defer s.unregisterFeedClient(ch)
+		_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", `{"status":"connected"}`)
+		flusher.Flush()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case msg := <-ch:
+				_, _ = fmt.Fprintf(w, "event: feed\ndata: %s\n\n", msg)
+				flusher.Flush()
+			}
+		}
+	}
+	http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 }
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -345,6 +399,7 @@ func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.db.QueryRow(r.Context(), `SELECT display_name FROM users WHERE id=$1`, item.AuthorID).Scan(&item.AuthorName)
 	s.invalidateFeed(r.Context())
+	s.publishFeedUpdate(`{"event":"post_created","id":"` + item.ID + `"}`)
 	writeJSON(w, 201, item)
 }
 func (s *Server) updatePost(w http.ResponseWriter, r *http.Request) {
@@ -363,6 +418,7 @@ func (s *Server) updatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateFeed(r.Context())
+	s.publishFeedUpdate(`{"event":"post_updated","id":"` + item.ID + `"}`)
 	writeJSON(w, 200, item)
 }
 func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +432,7 @@ func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateFeed(r.Context())
+	s.publishFeedUpdate(`{"event":"post_deleted","id":"` + pathID(r) + `"}`)
 	w.WriteHeader(204)
 }
 

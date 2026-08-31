@@ -1,11 +1,29 @@
 const state = { token: localStorage.getItem('blog_token'), user: JSON.parse(localStorage.getItem('blog_user') || 'null') };
+let feedStream = null;
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 function initials(name) { return (name || '?').trim().charAt(0).toUpperCase(); }
 function note(element, message, good = false) { element.textContent = message; element.style.color = good ? 'var(--green)' : 'var(--coral)'; }
 function toast(message) { const el = $('#toast'); el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2600); }
 async function api(path, options = {}) { const headers = {'Content-Type':'application/json', ...(options.headers || {})}; if (state.token) headers.Authorization = `Bearer ${state.token}`; const response = await fetch(path, {...options, headers}); const data = response.status === 204 ? null : await response.json().catch(() => ({})); if (!response.ok) throw new Error(data?.error || 'Request failed'); return {data, response}; }
-function setSession() { const signedIn = Boolean(state.token && state.user); $('#auth-panel').classList.toggle('hidden', signedIn); $('#app-panel').classList.toggle('hidden', !signedIn); $('#logout').classList.toggle('hidden', !signedIn); $('#session-label').textContent = signedIn ? state.user.email : 'Not signed in'; if (signedIn) { $('#profile-name').textContent = state.user.display_name; $('#profile-email').textContent = state.user.email; ['avatar','composer-avatar'].forEach(id => { $(('#' + id)).textContent = initials(state.user.display_name); }); $('#api-status').textContent = 'API connected'; loadFeed(); } }
+function startFeedStream() {
+  if (!state.token) return;
+  if (feedStream) {
+    feedStream.close();
+  }
+  feedStream = new EventSource(`/api/v1/feed/stream?token=${encodeURIComponent(state.token)}`);
+  feedStream.addEventListener('connected', () => {
+    $('#api-status').textContent = 'API connected';
+  });
+  feedStream.addEventListener('feed', () => {
+    loadFeed();
+  });
+  feedStream.onerror = () => {
+    $('#api-status').textContent = 'API reconnecting...';
+    setTimeout(startFeedStream, 2000);
+  };
+}
+function setSession() { const signedIn = Boolean(state.token && state.user); $('#auth-panel').classList.toggle('hidden', signedIn); $('#app-panel').classList.toggle('hidden', !signedIn); $('#logout').classList.toggle('hidden', !signedIn); $('#session-label').textContent = signedIn ? state.user.email : 'Not signed in'; if (signedIn) { $('#profile-name').textContent = state.user.display_name; $('#profile-email').textContent = state.user.email; ['avatar','composer-avatar'].forEach(id => { $(('#' + id)).textContent = initials(state.user.display_name); }); $('#api-status').textContent = 'API connected'; startFeedStream(); loadFeed(); } else if (feedStream) { feedStream.close(); feedStream = null; } }
 function saveSession(token, user) { state.token = token; state.user = user; localStorage.setItem('blog_token', token); localStorage.setItem('blog_user', JSON.stringify(user)); setSession(); }
 function formatDate(value) { return new Intl.DateTimeFormat(undefined, {month:'short', day:'numeric', year:'numeric'}).format(new Date(value)); }
 function commentTree(comments, postId, depth = 0) { return comments.map(comment => `<div class="comment ${depth ? 'reply' : ''}"><small><strong>${esc(comment.author_name)}</strong> · ${formatDate(comment.created_at)}</small><p>${esc(comment.body)}</p>${comment.replies?.length ? commentTree(comment.replies, postId, depth + 1) : ''}</div>`).join(''); }

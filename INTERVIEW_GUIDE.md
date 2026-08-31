@@ -203,9 +203,21 @@ The UI displays whether the current feed response was fresh from PostgreSQL or s
 
 Two posts can share a timestamp at database precision. Ordering by both timestamp and UUID gives a deterministic order rather than allowing equal timestamps to shuffle between requests.
 
-#### Current feed wording
+#### Real-time feed stream (SSE)
 
-The original product description says “real-time feeds.” The current implementation provides fast refreshable feeds with short-lived Redis caching; it does not implement WebSockets, Server-Sent Events, or push notifications. A true real-time version would add an event/publish layer and a browser subscription mechanism.
+The implementation now includes Server-Sent Events (SSE) for real-time feed updates:
+
+1. The browser calls `GET /api/v1/feed/stream` with a JWT (passed as a query parameter `?token=...`).
+2. The connection is authenticated the same way as other endpoints.
+3. The server establishes a persistent text/event-stream connection.
+4. When a post is created, updated, or deleted, the server broadcasts an event to all connected clients.
+5. The browser's `EventSource` listener receives the event and calls `loadFeed()` to refresh the display.
+6. If the connection drops, the browser automatically reconnects after 2 seconds.
+7. This gives the appearance of a live feed without full page refresh, while PostgreSQL remains the authoritative source and Redis cache is still invalidated on mutations.
+
+#### SignalR alternative
+
+SignalR is a valid real-time option for a browser-first social app. It would replace manual refresh or polling with a persistent connection and push feed or comment updates to connected clients as soon as the server processes a database write. PostgreSQL would still be the source of truth, Redis could still handle cache or pub/sub tasks, and SignalR would mainly change the delivery mechanism rather than the data model. For a Go service, WebSockets or SSE with Redis Pub/Sub is a more natural fit, but SignalR is a strong choice in a .NET stack where the same team owns both the API and the realtime transport.
 
 ### 4.6 Post creation flow
 
@@ -225,7 +237,8 @@ The original product description says “real-time feeds.” The current impleme
 3. The SQL `WHERE` clause requires either the authenticated user to own the post or the JWT role to be `admin`.
 4. No matching or permitted row returns HTTP 404.
 5. Successful updates invalidate feed cache pages.
-6. The updated post is returned.
+6. A broadcast event `{"event":"post_updated","id":"<id>"}` is published to all SSE-connected clients.
+7. The updated post is returned.
 
 ### 4.8 Post delete flow
 
@@ -234,7 +247,8 @@ The original product description says “real-time feeds.” The current impleme
 3. PostgreSQL deletes the post.
 4. Cascading foreign keys delete its comments.
 5. Feed cache pages are invalidated.
-6. Success returns HTTP 204.
+6. A broadcast event `{"event":"post_deleted","id":"<id>"}` is published to all SSE-connected clients.
+7. Success returns HTTP 204.
 
 ### 4.9 Comment listing flow
 
@@ -422,6 +436,7 @@ The key is read from the environment and never hardcoded. If the API request fai
 | `POST` | `/api/v1/auth/login` | No | Validate credentials and issue JWT |
 | `GET` | `/api/v1/auth/verify?token=...` | No | Consume email verification token |
 | `GET` | `/api/v1/feed?page=1` | Yes | Read paginated feed |
+| `GET` | `/api/v1/feed/stream` | Yes | Server-Sent Events stream for real-time feed updates |
 | `POST` | `/api/v1/posts` | Yes | Create a post |
 | `PUT` | `/api/v1/posts/{id}` | Yes | Update own/admin-accessible post |
 | `DELETE` | `/api/v1/posts/{id}` | Yes | Delete own/admin-accessible post |
@@ -686,7 +701,7 @@ The update and delete SQL statements include both the post ID and an authorizati
 
 ### Is the feed real-time?
 
-The current implementation is not push-based real time. It is a short-lived cached feed that the browser refreshes on load, after publishing, or through the refresh control. True real time would require WebSockets or Server-Sent Events plus an event distribution mechanism such as Redis Pub/Sub.
+Yes, the current implementation now includes real-time push updates via Server-Sent Events (SSE). When a post is created, updated, or deleted, the server broadcasts an event to all connected clients, which automatically refresh their feed. The implementation uses SSE (text/event-stream) rather than WebSockets and does not currently use Redis Pub/Sub, since broadcasts are in-memory. PostgreSQL remains the authoritative source, and Redis continues to cache frequently accessed pages. For a multi-instance deployment, Redis Pub/Sub could be added to distribute events across server processes.
 
 ### How would you paginate at very large scale?
 
@@ -722,7 +737,8 @@ Use Go race tests for in-process code, integration tests against PostgreSQL and 
 
 ## 17. Current Limitations to State Clearly
 
-- No WebSocket or Server-Sent Event feed; feed updates are refresh-driven.
+- Feed broadcast is in-memory only; multiple server instances would need Redis Pub/Sub for event distribution.
+- No WebSocket support (SSE only); WebSockets offer bidirectional communication and might be preferable for a chat or collaborative feature.
 - No dedicated automated integration test suite yet.
 - Registration's user insert and verification insert are not in one explicit transaction.
 - Verification update should ideally be in the same transaction as token consumption.
@@ -755,9 +771,10 @@ Use Go race tests for in-process code, integration tests against PostgreSQL and 
 11. Add integration tests and load tests.
 12. Restrict CORS and configure HTTPS.
 13. Add database migration versioning and rollback strategy.
-14. Add WebSockets or SSE plus Redis Pub/Sub for true real-time feed events.
-15. Add moderation, abuse controls, pagination limits, and audit logs.
+14. Add Redis Pub/Sub for event distribution across multiple server instances.
+15. Consider WebSockets if bidirectional communication becomes necessary.
+16. Add moderation, abuse controls, pagination limits, and audit logs.
 
 ## 19. Final Interview Closing Statement
 
-> I built the service around PostgreSQL as the source of truth and Redis as an acceleration and protection layer. The request path is intentionally simple: the standard Go router applies rate limiting and CORS, protected routes validate a signed JWT, handlers perform parameterized PostgreSQL queries, and the feed uses Redis with short TTLs and invalidation after mutations. I kept the frontend embedded so the same binary is easy to run and deploy. I can also explain the current tradeoffs: the feed is refresh-based rather than push-based, offset pagination should become keyset pagination at scale, role claims are valid for the token lifetime, and production hardening would add transactions, durable email delivery, stronger token storage, observability, and integration tests.
+> I built the service around PostgreSQL as the source of truth and Redis as an acceleration and protection layer. The request path is intentionally simple: the standard Go router applies rate limiting and CORS, protected routes validate a signed JWT, handlers perform parameterized PostgreSQL queries, and the feed uses Redis with short TTLs and invalidation after mutations. I also added real-time push updates via Server-Sent Events (SSE); when a post is created, updated, or deleted, connected browsers receive an event and automatically refresh their feed. I kept the frontend embedded so the same binary is easy to run and deploy. The current implementation is suitable for a single-instance deployment; for horizontal scaling, I would add Redis Pub/Sub to distribute events across server processes. Other current tradeoffs include offset pagination (which should become keyset pagination at scale), role claims valid for the token lifetime, and production hardening still needed for transactions, durable email delivery, stronger token storage, observability, and integration tests.
